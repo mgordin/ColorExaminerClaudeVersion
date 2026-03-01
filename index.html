@@ -1055,22 +1055,69 @@ createApp({
       const swatches = allSwatches.value;
       if (!swatches.length) return;
 
-      const SCALE    = 2;       // retina
-      const COLS     = Math.min(swatches.length, 6);
-      const ROWS     = Math.ceil(swatches.length / COLS);
-      const SW       = 160;     // swatch cell width (logical)
-      const SH       = 140;     // swatch cell height (logical)
-      const COLOR_H  = 88;      // colour block height within cell
-      const PAD      = 24;      // outer padding
-      const GAP      = 10;      // gap between cells
-      const HDR      = 56;      // header bar height
+      const SCALE   = 2;
+      const COLS    = Math.min(swatches.length, 6);
+      const SW      = 160;    // cell width (logical px)
+      const COLOR_H = 88;     // colour block height
+      const PAD     = 24;     // outer padding
+      const GAP     = 10;     // gap between cells
+      const HDR     = 56;     // header height
+      const INNER   = SW - 20; // text area width (10px margin each side)
+      const LINE_H  = 13;     // line height for description
+      const FONT_DESC = '400 9px monospace';
+      const FONT_HEX  = '500 11px monospace';
 
-      const W = PAD*2 + COLS*SW + (COLS-1)*GAP;
-      const H = PAD + HDR + ROWS*(SH+GAP) - GAP + PAD;
+      // Measure canvas once to do text metrics
+      const measureCanvas = document.createElement('canvas');
+      const mCtx = measureCanvas.getContext('2d');
 
-      const canvas   = document.createElement('canvas');
-      canvas.width   = W * SCALE;
-      canvas.height  = H * SCALE;
+      // Helper: wrap text into lines that fit within maxW, return array of lines
+      function wrapText(text, maxW) {
+        mCtx.font = FONT_DESC;
+        const words = text.split(' ');
+        const lines = [];
+        let line = '';
+        for (const w of words) {
+          const test = line ? line + ' ' + w : w;
+          if (mCtx.measureText(test).width > maxW && line) {
+            lines.push(line);
+            line = w;
+          } else {
+            line = test;
+          }
+        }
+        if (line) lines.push(line);
+        return lines;
+      }
+
+      // Pre-compute wrapped description lines for each swatch
+      const wrappedDescs = swatches.map(s => wrapText(s.desc, INNER));
+
+      // Cell height = colour block + hex line + desc lines + padding
+      const cellHeights = wrappedDescs.map(lines => {
+        const labelH = 22 + lines.length * LINE_H + 8; // 22 = hex row, 8 = bottom pad
+        return COLOR_H + Math.max(labelH, 44);
+      });
+
+      // Per-row max cell height (rows share the same height)
+      const ROWS = Math.ceil(swatches.length / COLS);
+      const rowH = [];
+      for (let r = 0; r < ROWS; r++) {
+        let maxH = 0;
+        for (let c = 0; c < COLS; c++) {
+          const idx = r * COLS + c;
+          if (idx < cellHeights.length) maxH = Math.max(maxH, cellHeights[idx]);
+        }
+        rowH.push(maxH);
+      }
+      const totalRowH = rowH.reduce((a, b) => a + b, 0);
+
+      const W = PAD * 2 + COLS * SW + (COLS - 1) * GAP;
+      const H = PAD + HDR + totalRowH + (ROWS - 1) * GAP + PAD;
+
+      const canvas = document.createElement('canvas');
+      canvas.width  = W * SCALE;
+      canvas.height = H * SCALE;
       const ctx = canvas.getContext('2d');
       ctx.scale(SCALE, SCALE);
 
@@ -1078,17 +1125,13 @@ createApp({
       ctx.fillStyle = '#0c0c0f';
       ctx.fillRect(0, 0, W, H);
 
-      // Header — "Chroma" title
+      // Header
       ctx.fillStyle = '#c8a96e';
       ctx.font = 'italic 300 20px Georgia, serif';
       ctx.fillText('Chroma', PAD, PAD + 22);
-
-      // Subtitle — swatch count
       ctx.fillStyle = '#9090a8';
       ctx.font = '400 10px monospace';
       ctx.fillText(`${swatches.length} swatch${swatches.length !== 1 ? 'es' : ''}`, PAD, PAD + 40);
-
-      // Separator
       ctx.strokeStyle = '#333340';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -1100,33 +1143,35 @@ createApp({
         const col = idx % COLS;
         const row = Math.floor(idx / COLS);
         const x   = PAD + col * (SW + GAP);
-        const y   = PAD + HDR + row * (SH + GAP);
+        // y = sum of all previous row heights + gaps
+        let y = PAD + HDR;
+        for (let r = 0; r < row; r++) y += rowH[r] + GAP;
+        const SH = rowH[row]; // this row's cell height
 
-        // Cell card background
+        // Cell background
         ctx.fillStyle = '#1a1a20';
         palRoundRect(ctx, x, y, SW, SH, 8);
         ctx.fill();
 
-        // Colour block (rounded top corners only)
+        // Colour block
         ctx.fillStyle = s.hex;
         palRoundRect(ctx, x, y, SW, COLOR_H, 8);
         ctx.fill();
-        // Square off the bottom of the colour block
-        ctx.fillRect(x, y + COLOR_H - 8, SW, 8);
+        ctx.fillRect(x, y + COLOR_H - 8, SW, 8); // square off bottom
 
         // Hex value
         ctx.fillStyle = '#e8e8f0';
-        ctx.font = '500 11px monospace';
-        ctx.fillText(s.hex.toUpperCase(), x + 10, y + COLOR_H + 17);
+        ctx.font = FONT_HEX;
+        ctx.fillText(s.hex.toUpperCase(), x + 10, y + COLOR_H + 16);
 
-        // Description
+        // Description — wrapped
         ctx.fillStyle = '#9090a8';
-        ctx.font = '400 9px monospace';
-        const desc = s.desc.length > 24 ? s.desc.slice(0, 22) + '…' : s.desc;
-        ctx.fillText(desc, x + 10, y + COLOR_H + 31);
+        ctx.font = FONT_DESC;
+        wrappedDescs[idx].forEach((line, li) => {
+          ctx.fillText(line, x + 10, y + COLOR_H + 30 + li * LINE_H);
+        });
       });
 
-      // Trigger download — must be in DOM for Firefox
       const dataUrl = canvas.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = dataUrl;
