@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Chroma — Color Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.prod.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0c0c0f;
+    --bg2: #141418;
+    --surface: #22222a;
+    --border: #333340;
+    --text: #e8e8f0;
+    --text2: #9090a8;
+    --accent: #c8a96e;
+    --radius: 12px;
+    --shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; }
+  #app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* TOOLBAR */
+  .toolbar {
+    flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px; background: var(--bg2);
+    border-bottom: 1px solid var(--border); z-index: 100; flex-wrap: wrap;
+  }
+  .toolbar-brand {
+    font-family: 'Cormorant Garamond', serif; font-size: 20px; font-weight: 300;
+    letter-spacing: 3px; color: var(--accent); margin-right: 4px;
+    font-style: italic; flex-shrink: 0;
+  }
+  .toolbar-sep { width: 1px; height: 24px; background: var(--border); margin: 0 2px; flex-shrink: 0; }
+  .toolbar-group { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .btn {
+    display: flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-family: 'DM Mono', monospace; font-size: 11px;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap; flex-shrink: 0;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.active { background: var(--accent); color: #0c0c0f; border-color: var(--accent); }
+  .btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+  input[type=file] { display: none; }
+
+  /* MAIN */
+  .main { flex: 1; position: relative; overflow: hidden; }
+
+  /* CANVAS */
+  .canvas-wrap {
+    width: 100%; height: 100%; position: relative; overflow: hidden; cursor: crosshair;
+    touch-action: none; /* let JS handle all touch gestures */
+  }
+  .canvas-wrap.mode-pan { cursor: grab; }
+  .canvas-wrap.mode-pan.panning { cursor: grabbing; }
+  canvas#main-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+  .popup-body {
+    padding: 12px;
+    overflow-y: auto;
+    max-height: 70vh;
+    touch-action: pan-y; /* allow popup body to scroll on mobile */
+    overscroll-behavior: contain;
+  }
+
+  /* SVG OVERLAY */
+  .overlay-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  /* UPLOAD PROMPT */
+  .upload-prompt {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; background: var(--bg); z-index: 10;
+  }
+  .upload-drop {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 32px 48px; text-align: center; transition: all 0.2s; cursor: pointer;
+  }
+  .upload-drop:hover, .upload-drop.drag-over { border-color: var(--accent); background: rgba(200,169,110,0.05); }
+  .upload-icon { font-size: 48px; opacity: 0.3; margin-bottom: 12px; }
+  .upload-title { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 300; letter-spacing: 2px; color: var(--text2); }
+  .upload-sub { font-size: 11px; color: var(--text2); letter-spacing: 1px; margin-top: 8px; }
+
+  /* POPUPS */
+  .popup-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 50; }
+  .popup {
+    position: absolute; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    pointer-events: all; min-width: 240px; max-width: 340px; user-select: none;
+  }
+  .popup-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 12px 8px; border-bottom: 1px solid var(--border);
+  }
+  .popup-drag-handle { flex: 1; cursor: move; display: flex; align-items: center; min-width: 0; padding: 2px 0; }
+  .popup-title { font-size: 10px; letter-spacing: 1.5px; color: var(--text2); text-transform: uppercase; }
+  .popup-modes { display: flex; gap: 3px; flex-shrink: 0; }
+  .mode-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border);
+    background: none; color: var(--text2); font-size: 9px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  .mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .mode-btn.active { background: var(--accent); color: #0c0c0f; border-color: var(--accent); }
+  .close-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: none; background: none;
+    color: var(--text2); cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+    transition: color 0.15s; line-height: 1; flex-shrink: 0;
+  }
+  .close-btn:hover { color: #ff6b6b; }
+  .swatch-large { width: 100%; height: 60px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 10px; }
+  .color-desc { font-family: 'Cormorant Garamond', serif; font-style: italic; font-size: 15px; color: var(--text); line-height: 1.4; margin-bottom: 10px; }
+  .color-values { font-size: 10px; color: var(--text2); letter-spacing: 0.5px; line-height: 1.8; }
+
+  /* COLOR PICKER WIDGET */
+  .color-picker-widget { margin-top: 10px; }
+  .hue-bar {
+    width: 100%; height: 14px; border-radius: 7px; margin-bottom: 8px; position: relative;
+    background: linear-gradient(to right,
+      hsl(0,100%,50%), hsl(30,100%,50%), hsl(60,100%,50%), hsl(90,100%,50%),
+      hsl(120,100%,50%), hsl(150,100%,50%), hsl(180,100%,50%), hsl(210,100%,50%),
+      hsl(240,100%,50%), hsl(270,100%,50%), hsl(300,100%,50%), hsl(330,100%,50%), hsl(360,100%,50%));
+  }
+  .hue-cursor {
+    position: absolute; top: -2px; width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    transform: translateX(-50%); pointer-events: none;
+  }
+  .color-grid { width: 100%; height: 120px; border-radius: 8px; position: relative; overflow: hidden; }
+  .color-grid-sat { position: absolute; inset: 0; background: linear-gradient(to right, white, transparent); }
+  .color-grid-val { position: absolute; inset: 0; background: linear-gradient(to bottom, transparent, black); }
+  .grid-cursor {
+    position: absolute; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    transform: translate(-50%, -50%); pointer-events: none;
+  }
+
+  /* LINE POPUP */
+  .line-popup { min-width: 300px; max-width: 420px; }
+  .line-strip-wrap { padding: 0 0 8px; }
+  .line-strip { width: 100%; height: 28px; border-radius: 6px; overflow: hidden; position: relative; cursor: crosshair; }
+  .line-strip canvas { display: block; width: 100%; height: 100%; }
+  .strip-cursor {
+    position: absolute; top: 0; height: 100%; width: 2px; background: white;
+    box-shadow: 0 0 4px rgba(0,0,0,0.8); pointer-events: none; transform: translateX(-50%);
+  }
+  .line-desc { font-family: 'Cormorant Garamond', serif; font-style: italic; font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 10px; }
+  .selected-points { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .point-chip {
+    width: 24px; height: 24px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.4);
+    cursor: pointer; transition: transform 0.15s, border-color 0.15s;
+  }
+  .point-chip:hover { transform: scale(1.15); }
+  .point-chip.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .chip-wrap { position: relative; display: inline-block; }
+  .chip-remove {
+    position: absolute; top: -4px; right: -4px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #ff5555; border: 1.5px solid var(--bg2);
+    color: white; font-size: 9px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; opacity: 0; transition: opacity 0.15s;
+    pointer-events: all;
+  }
+  .chip-wrap:hover .chip-remove { opacity: 1; }
+  /* On touch devices always show the remove button */
+  @media (hover: none) { .chip-remove { opacity: 1; } }
+
+  /* SWATCHES PANEL */
+  .swatches-panel {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 220px;
+    background: var(--bg2); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; z-index: 60;
+    transform: translateX(100%); transition: transform 0.25s ease;
+  }
+  .swatches-panel.open { transform: translateX(0); }
+  .panel-header {
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+    font-size: 10px; letter-spacing: 1.5px; color: var(--text2); text-transform: uppercase;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .panel-body { flex: 1; overflow-y: auto; padding: 10px; }
+  .panel-swatch-item {
+    display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px;
+    border: 1px solid var(--border); margin-bottom: 6px; background: var(--surface);
+  }
+  .panel-swatch-dot { width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0; }
+  .panel-swatch-info { font-size: 10px; color: var(--text2); line-height: 1.6; }
+  .panel-swatch-desc { font-family: 'Cormorant Garamond', serif; font-style: italic; font-size: 12px; color: var(--text); }
+
+  /* ZOOM & MODE INDICATOR */
+  .zoom-controls { position: absolute; bottom: 16px; left: 16px; display: flex; flex-direction: column; gap: 4px; z-index: 40; }
+  .zoom-btn {
+    width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--text); font-size: 18px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  .zoom-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .mode-indicator {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+    padding: 6px 14px; font-size: 10px; letter-spacing: 1.5px; color: var(--text2);
+    pointer-events: none; z-index: 40; text-transform: uppercase; white-space: nowrap;
+  }
+
+  .drag-line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 3; }
+  .drag-endpoint { fill: var(--accent); }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  @media (max-width: 600px) {
+    .toolbar { gap: 4px; padding: 6px 8px; }
+    .toolbar-brand { font-size: 16px; letter-spacing: 2px; }
+    .toolbar-sep { display: none; }
+    .btn { padding: 5px 8px; font-size: 10px; }
+    .btn .btn-label { display: none; }
+    .popup { max-width: calc(100vw - 24px); min-width: 200px; }
+    .line-popup { min-width: 260px; }
+    .swatches-panel { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- TOOLBAR -->
+  <div class="toolbar">
+    <span class="toolbar-brand">Chroma</span>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+      <button class="btn" @click="triggerUpload">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span class="btn-label">Upload</span>
+      </button>
+      <button class="btn" @click="triggerPaste">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        <span class="btn-label">Paste</span>
+      </button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+      <button class="btn" :class="{active: tool==='point'}" @click="tool='point'">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8" stroke-dasharray="4 2"/></svg>
+        <span class="btn-label">Point</span>
+      </button>
+      <button class="btn" :class="{active: tool==='line'}" @click="tool='line'">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="2" fill="currentColor"/><circle cx="19" cy="5" r="2" fill="currentColor"/></svg>
+        <span class="btn-label">Line</span>
+      </button>
+      <button class="btn" :class="{active: tool==='pan'}" @click="tool='pan'">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11V6a2 2 0 014 0v3M9 11a2 2 0 00-2 2v4a6 6 0 0012 0v-4a2 2 0 00-2-2M9 11h6"/></svg>
+        <span class="btn-label">Pan</span>
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn" @click="exportPNG">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span class="btn-label">Export</span>
+      </button>
+      <button class="btn" :class="{active: panelOpen}" @click="panelOpen=!panelOpen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span class="btn-label">Swatches</span>
+      </button>
+    </div>
+    <input type="file" ref="fileInput" accept="image/*" @change="onFileChange">
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main" id="main-area">
+    <!-- Upload prompt -->
+    <div v-if="!imageLoaded" class="upload-prompt"
+      @dragover.prevent="dragOver=true" @dragleave="dragOver=false" @drop.prevent="onDrop">
+      <div class="upload-drop" :class="{'drag-over':dragOver}" @click="triggerUpload">
+        <div class="upload-icon">⬡</div>
+        <div class="upload-title">Drop image here</div>
+        <div class="upload-sub">click to browse · or Ctrl+V to paste</div>
+      </div>
+    </div>
+
+    <!-- Canvas area -->
+    <div v-show="imageLoaded" class="canvas-wrap"
+      :class="{'mode-pan': tool==='pan', 'panning': isPanning}"
+      ref="canvasWrap"
+      @mousedown="onMouseDown"
+      @mousemove="onMouseMove"
+      @mouseup="onMouseUp"
+      @mouseleave="onMouseLeave"
+      @wheel.prevent="onWheel"
+      @touchstart="onTouchStart"
+      @touchmove="onTouchMove"
+      @touchend="onTouchEnd"
+      @contextmenu.prevent>
+
+      <canvas id="main-canvas" ref="mainCanvas"></canvas>
+
+      <!-- Overlay SVG -->
+      <svg class="overlay-svg" :width="wrapW" :height="wrapH">
+        <g v-for="p in pointPickCrosshairs" :key="p.id">
+          <line :x1="p.sx-10" :y1="p.sy" :x2="p.sx+10" :y2="p.sy" stroke="#c8a96e" stroke-width="1.5"/>
+          <line :x1="p.sx" :y1="p.sy-10" :x2="p.sx" :y2="p.sy+10" stroke="#c8a96e" stroke-width="1.5"/>
+          <circle :cx="p.sx" :cy="p.sy" r="4" fill="none" stroke="#c8a96e" stroke-width="1.5"/>
+        </g>
+        <g v-for="l in linePicks" :key="l.id">
+          <line :x1="l.sx1" :y1="l.sy1" :x2="l.sx2" :y2="l.sy2" stroke="#7eb8c8" stroke-width="2" stroke-dasharray="5 2"/>
+          <circle :cx="l.sx1" :cy="l.sy1" r="5" fill="#7eb8c8"/>
+          <circle :cx="l.sx2" :cy="l.sy2" r="5" fill="#7eb8c8"/>
+        </g>
+        <g v-if="tool==='line' && isDraggingLine">
+          <line class="drag-line" :x1="dragLine.x1" :y1="dragLine.y1" :x2="dragLine.x2" :y2="dragLine.y2"/>
+          <circle class="drag-endpoint" :cx="dragLine.x1" :cy="dragLine.y1" r="5"/>
+          <circle class="drag-endpoint" :cx="dragLine.x2" :cy="dragLine.y2" r="5"/>
+        </g>
+        <!-- Selected line point markers -->
+        <g v-for="m in linePointMarkers" :key="m.key">
+          <circle :cx="m.x" :cy="m.y" :r="m.active ? 8 : 5"
+            :fill="m.hex" stroke="white" :stroke-width="m.active ? 2.5 : 1.5"/>
+          <circle v-if="m.active" :cx="m.x" :cy="m.y" r="12"
+            fill="none" stroke="#c8a96e" stroke-width="1.5" stroke-dasharray="3 2"/>
+        </g>
+      </svg>
+
+      <!-- POPUPS OVERLAY -->
+      <div class="popup-overlay">
+
+        <!-- Point popups -->
+        <div v-for="pp in pointPopups" :key="pp.id" class="popup"
+          :style="{left: pp.x+'px', top: pp.y+'px'}">
+          <div class="popup-header">
+            <div class="popup-drag-handle"
+              @mousedown.stop="startPopupDrag($event, pp)"
+              @touchstart.stop.passive="startPopupTouchDrag($event, pp)">
+              <span class="popup-title">Point Color</span>
+            </div>
+            <div class="popup-modes">
+              <button class="mode-btn" :class="{active: pp.mode===1}"
+                @mousedown.stop @touchstart.stop
+                @click.stop="setPointMode(pp.id, 1)">■■</button>
+              <button class="mode-btn" :class="{active: pp.mode===2}"
+                @mousedown.stop @touchstart.stop
+                @click.stop="setPointMode(pp.id, 2)">■</button>
+              <button class="mode-btn" :class="{active: pp.mode===3}"
+                @mousedown.stop @touchstart.stop
+                @click.stop="setPointMode(pp.id, 3)">◼</button>
+            </div>
+            <button class="close-btn"
+              @mousedown.stop @touchstart.stop
+              @click.stop="closePointPopup(pp.id)">×</button>
+          </div>
+          <div class="popup-body">
+            <div class="swatch-large" :style="{background: pp.hex}"></div>
+            <template v-if="pp.mode <= 2">
+              <div class="color-desc">{{ pp.desc }}</div>
+              <div class="color-values">
+                {{ pp.hex }}<br>
+                rgb({{ pp.r }}, {{ pp.g }}, {{ pp.b }})<br>
+                hsl({{ pp.h }}°, {{ pp.s }}%, {{ pp.l }}%)
+              </div>
+            </template>
+            <template v-if="pp.mode === 1">
+              <div class="color-picker-widget">
+                <div class="hue-bar">
+                  <div class="hue-cursor" :style="{left:(pp.h/360*100)+'%', background:'hsl('+pp.h+',100%,50%)'}"></div>
+                </div>
+                <div class="color-grid" :style="{background:'hsl('+pp.h+',100%,50%)'}">
+                  <div class="color-grid-sat"></div>
+                  <div class="color-grid-val"></div>
+                  <div class="grid-cursor" :style="{left:pp.s+'%', top:(100-pp.vFromHsv)+'%'}"></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Line popups -->
+        <div v-for="lp in linePopups" :key="lp.id" class="popup line-popup"
+          :style="{left: lp.x+'px', top: lp.y+'px'}">
+          <div class="popup-header">
+            <div class="popup-drag-handle"
+              @mousedown.stop="startPopupDrag($event, lp)"
+              @touchstart.stop.passive="startPopupTouchDrag($event, lp)">
+              <span class="popup-title">Line Colors</span>
+            </div>
+            <button class="close-btn"
+              @mousedown.stop @touchstart.stop
+              @click.stop="closeLinePopup(lp.id)">×</button>
+          </div>
+          <div class="popup-body">
+            <!-- Color strip -->
+            <div class="line-strip-wrap">
+              <div class="line-strip"
+                @click.stop="onStripClick($event, lp)"
+                @mousemove.stop="onStripHover($event, lp)"
+                @mouseleave.stop="lp.stripHoverX = null">
+                <canvas :ref="el => setStripCanvas(el, lp)"></canvas>
+                <div class="strip-cursor" v-if="lp.stripHoverX !== null" :style="{left: lp.stripHoverX+'px'}"></div>
+              </div>
+            </div>
+            <div class="line-desc">{{ lp.lineDesc }}</div>
+            <!-- Selected point chips -->
+            <div v-if="lp.selectedPoints.length" style="margin-bottom:10px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <span style="font-size:9px;letter-spacing:1.5px;color:var(--text2);text-transform:uppercase">Selected Points</span>
+                <button
+                  style="font-size:9px;letter-spacing:1px;color:var(--text2);background:none;border:none;cursor:pointer;padding:0;text-transform:uppercase;"
+                  @mousedown.stop @touchstart.stop
+                  @click.stop="clearLinePoints(lp.id)">Clear all</button>
+              </div>
+              <div class="selected-points">
+                <div v-for="(sp, i) in lp.selectedPoints" :key="sp.colorIdx" class="chip-wrap">
+                  <div
+                    class="point-chip"
+                    :class="{active: lp.activePointIdx === i}"
+                    :style="{background: sp.hex}"
+                    @mousedown.stop @touchstart.stop
+                    @click.stop="setLineActivePoint(lp.id, i)"
+                    :title="sp.desc">
+                  </div>
+                  <div class="chip-remove"
+                    @mousedown.stop @touchstart.stop
+                    @click.stop="removeLinePoint(lp.id, i)">×</div>
+                </div>
+              </div>
+            </div>
+            <!-- Active point detail -->
+            <template v-if="lp.selectedPoints[lp.activePointIdx]">
+              <div class="swatch-large" :style="{background: lp.selectedPoints[lp.activePointIdx].hex}"></div>
+              <div class="color-desc">{{ lp.selectedPoints[lp.activePointIdx].desc }}</div>
+              <div class="color-values">
+                {{ lp.selectedPoints[lp.activePointIdx].hex }}<br>
+                rgb({{ lp.selectedPoints[lp.activePointIdx].r }},
+                    {{ lp.selectedPoints[lp.activePointIdx].g }},
+                    {{ lp.selectedPoints[lp.activePointIdx].b }})
+              </div>
+              <div class="color-picker-widget">
+                <div class="hue-bar">
+                  <div class="hue-cursor" :style="{
+                    left: (lp.selectedPoints[lp.activePointIdx].h/360*100)+'%',
+                    background: 'hsl('+lp.selectedPoints[lp.activePointIdx].h+',100%,50%)'
+                  }"></div>
+                </div>
+                <div class="color-grid" :style="{background:'hsl('+lp.selectedPoints[lp.activePointIdx].h+',100%,50%)'}">
+                  <div class="color-grid-sat"></div>
+                  <div class="color-grid-val"></div>
+                  <div class="grid-cursor" :style="{
+                    left: lp.selectedPoints[lp.activePointIdx].s+'%',
+                    top: (100-lp.selectedPoints[lp.activePointIdx].vFromHsv)+'%'
+                  }"></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="zoom-controls">
+        <button class="zoom-btn" @click="adjustZoom(1.25)">+</button>
+        <button class="zoom-btn" @click="adjustZoom(0.8)">−</button>
+      </div>
+      <div class="mode-indicator">
+        {{ tool==='point' ? 'Click to sample color' : tool==='line' ? 'Drag to sample line' : 'Pan mode — drag to move' }}
+      </div>
+    </div>
+
+    <!-- Swatches panel -->
+    <div class="swatches-panel" :class="{open: panelOpen}">
+      <div class="panel-header">
+        <span>Open Swatches</span>
+        <button class="close-btn" @click="panelOpen=false">×</button>
+      </div>
+      <div class="panel-body">
+        <div v-if="allSwatches.length===0" style="font-size:11px;color:var(--text2);text-align:center;margin-top:32px">
+          No open swatches.<br>Pick a point to get started.
+        </div>
+        <div v-for="s in allSwatches" :key="s.id" class="panel-swatch-item">
+          <div class="panel-swatch-dot" :style="{background:s.hex}"></div>
+          <div>
+            <div class="panel-swatch-desc">{{ s.desc }}</div>
+            <div class="panel-swatch-info">{{ s.hex }}<br>{{ s.type }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+
+    // ── Refs ─────────────────────────────────────────────────────────
+    const fileInput  = ref(null);
+    const canvasWrap = ref(null);
+    const mainCanvas = ref(null);
+
+    // ── State ─────────────────────────────────────────────────────────
+    const imageLoaded = ref(false);
+    const dragOver    = ref(false);
+    const tool        = ref('point');
+    const panelOpen   = ref(false);
+    const img         = ref(null);
+    const transform   = reactive({ x:0, y:0, scale:1 });
+    const wrapW       = ref(800);
+    const wrapH       = ref(600);
+
+    const pointPopups        = reactive([]);
+    const linePopups         = reactive([]);
+    const linePicks          = reactive([]);
+    const pointPickCrosshairs = reactive([]);
+
+    let nextId = 1;
+    const getId = () => nextId++;
+
+    const isPanning     = ref(false);
+    const isDraggingLine = ref(false);
+    const dragLine      = reactive({ x1:0, y1:0, x2:0, y2:0 });
+    let panStart        = null;
+    let lineStart       = null;
+    let popupDragState  = null;
+
+    // ── Image loading ─────────────────────────────────────────────────
+    function loadImage(src) {
+      const image = new Image();
+      image.onload = () => {
+        img.value = image;
+        offscreenCtxCache = null;
+        imageLoaded.value = true;
+        nextTick(fitImage);
+      };
+      image.src = src;
+    }
+
+    function triggerUpload()     { fileInput.value.click(); }
+    function onFileChange(e)     { const f = e.target.files[0]; if (f) readFile(f); }
+    function onDrop(e)           {
+      dragOver.value = false;
+      const f = e.dataTransfer.files[0];
+      if (f && f.type.startsWith('image/')) readFile(f);
+    }
+    function readFile(file) {
+      const reader = new FileReader();
+      reader.onload = ev => loadImage(ev.target.result);
+      reader.readAsDataURL(file);
+    }
+
+    // ── Paste ─────────────────────────────────────────────────────────
+    // The Paste button tries the async Clipboard API (requires permission/HTTPS).
+    // If unavailable it shows a plain alert directing users to Ctrl+V or Upload.
+    // Ctrl+V always works on desktop via the global paste listener below.
+    async function triggerPaste() {
+      if (navigator.clipboard && typeof navigator.clipboard.read === 'function') {
+        try {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            for (const type of item.types) {
+              if (type.startsWith('image/')) {
+                readFile(await item.getType(type));
+                return;
+              }
+            }
+          }
+          alert('No image found in clipboard.\nCopy an image first, then click Paste.');
+          return;
+        } catch { /* fall through */ }
+      }
+      // Clipboard API not available (mobile Safari, HTTP, etc.)
+      alert('To load an image:\n• Desktop: press Ctrl+V (or Cmd+V) after copying an image\n• Mobile: use the Upload button to pick a photo');
+    }
+
+    // Global keyboard paste — handles Ctrl+V everywhere without needing to click Paste
+    function handleGlobalPaste(e) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          readFile(item.getAsFile());
+          return;
+        }
+      }
+    }
+
+    // ── Canvas / transform ────────────────────────────────────────────
+    function updateWrapSize() {
+      if (!canvasWrap.value) return;
+      const r = canvasWrap.value.getBoundingClientRect();
+      wrapW.value = r.width; wrapH.value = r.height;
+    }
+
+    function fitImage() {
+      updateWrapSize();
+      if (!img.value) return;
+      const s = Math.min(wrapW.value / img.value.width, wrapH.value / img.value.height, 1);
+      transform.scale = s;
+      transform.x = (wrapW.value  - img.value.width  * s) / 2;
+      transform.y = (wrapH.value - img.value.height * s) / 2;
+      drawCanvas();
+    }
+
+    function drawCanvas() {
+      if (!mainCanvas.value || !img.value) return;
+      const c = mainCanvas.value;
+      c.width = wrapW.value; c.height = wrapH.value;
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.save();
+      ctx.translate(transform.x, transform.y);
+      ctx.scale(transform.scale, transform.scale);
+      ctx.drawImage(img.value, 0, 0);
+      ctx.restore();
+    }
+
+    function adjustZoom(factor) {
+      const cx = wrapW.value/2, cy = wrapH.value/2;
+      const ns = Math.max(0.05, Math.min(20, transform.scale * factor));
+      transform.x = cx - (cx - transform.x) * (ns / transform.scale);
+      transform.y = cy - (cy - transform.y) * (ns / transform.scale);
+      transform.scale = ns;
+      drawCanvas(); updatePickPositions();
+    }
+
+    function onWheel(e) {
+      const factor = e.deltaY < 0 ? 1.12 : 0.89;
+      const rect = canvasWrap.value.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const ns = Math.max(0.05, Math.min(20, transform.scale * factor));
+      transform.x = mx - (mx - transform.x) * (ns / transform.scale);
+      transform.y = my - (my - transform.y) * (ns / transform.scale);
+      transform.scale = ns;
+      drawCanvas(); updatePickPositions();
+    }
+
+    function screenToImage(sx, sy) {
+      return { x: (sx - transform.x) / transform.scale, y: (sy - transform.y) / transform.scale };
+    }
+    function imageToScreen(ix, iy) {
+      return { x: ix * transform.scale + transform.x, y: iy * transform.scale + transform.y };
+    }
+
+    // ── Color sampling ────────────────────────────────────────────────
+    let offscreenCtxCache = null;
+    function getOffCtx() {
+      if (!offscreenCtxCache) {
+        const oc = document.createElement('canvas');
+        oc.width = img.value.width; oc.height = img.value.height;
+        offscreenCtxCache = oc.getContext('2d');
+        offscreenCtxCache.drawImage(img.value, 0, 0);
+      }
+      return offscreenCtxCache;
+    }
+
+    function samplePixel(ix, iy) {
+      const px = Math.round(Math.max(0, Math.min(ix, img.value.width  - 1)));
+      const py = Math.round(Math.max(0, Math.min(iy, img.value.height - 1)));
+      const d  = getOffCtx().getImageData(px, py, 1, 1).data;
+      return { r: d[0], g: d[1], b: d[2] };
+    }
+
+    function rgbToHsl(r, g, b) {
+      r/=255; g/=255; b/=255;
+      const max=Math.max(r,g,b), min=Math.min(r,g,b);
+      let h, s, l=(max+min)/2;
+      if (max===min) { h=s=0; } else {
+        const d=max-min;
+        s = l>0.5 ? d/(2-max-min) : d/(max+min);
+        switch(max) {
+          case r: h=((g-b)/d+(g<b?6:0))/6; break;
+          case g: h=((b-r)/d+2)/6; break;
+          default: h=((r-g)/d+4)/6;
+        }
+      }
+      return { h:Math.round(h*360), s:Math.round(s*100), l:Math.round(l*100) };
+    }
+
+    function rgbToHsv(r, g, b) {
+      r/=255; g/=255; b/=255;
+      const max=Math.max(r,g,b), d=max-Math.min(r,g,b);
+      return { s:Math.round((max===0?0:d/max)*100), v:Math.round(max*100) };
+    }
+
+    function toHex(r,g,b) { return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+
+    function colorDesc(r, g, b) {
+      const { h, s, l } = rgbToHsl(r,g,b);
+      if (s<8) return l<20?'near black':l>85?'near white':'neutral gray';
+      const p=[];
+      if (l<10) p.push('very dark'); else if (l<25) p.push('dark');
+      else if (l<40) p.push('medium-dark'); else if (l>90) p.push('nearly white');
+      else if (l>75) p.push('pale'); else if (l>60) p.push('light');
+      if (s<25) p.push('desaturated'); else if (s<50) p.push('muted');
+      else if (s>85) p.push('vivid'); else if (s>65) p.push('saturated');
+      const hues=[[0,'red'],[15,'red-orange'],[30,'orange'],[45,'amber'],[55,'yellow-orange'],
+        [65,'yellow'],[80,'yellow-green'],[100,'lime'],[135,'green'],[165,'teal'],
+        [185,'cyan'],[210,'sky blue'],[240,'blue'],[260,'blue-violet'],[280,'violet'],
+        [300,'purple'],[320,'magenta'],[340,'rose'],[355,'red'],[360,'red']];
+      let hn='red';
+      for (let i=0;i<hues.length-1;i++) { if (h>=hues[i][0]&&h<hues[i+1][0]){hn=hues[i][1];break;} }
+      p.push(hn);
+      return p.join(', ');
+    }
+
+    function buildColorData(r,g,b) {
+      const hsl=rgbToHsl(r,g,b), hsv=rgbToHsv(r,g,b);
+      return { r,g,b, hex:toHex(r,g,b), h:hsl.h, s:hsl.s, l:hsl.l, vFromHsv:hsv.v, desc:colorDesc(r,g,b) };
+    }
+
+    // ── Point pick ────────────────────────────────────────────────────
+    function samplePoint(sx, sy) {
+      const ip = screenToImage(sx, sy);
+      if (ip.x<0||ip.y<0||ip.x>=img.value.width||ip.y>=img.value.height) return;
+      const { r,g,b } = samplePixel(ip.x, ip.y);
+      const cd = buildColorData(r,g,b);
+      const id = getId();
+      const px = Math.max(8, Math.min(wrapW.value-260, sx+16));
+      const py = Math.max(8, Math.min(wrapH.value-200, sy-40));
+      pointPopups.push({ id, mode:1, x:px, y:py, ix:ip.x, iy:ip.y, sx, sy, ...cd });
+      pointPickCrosshairs.push({ id, sx, sy });
+    }
+
+    function closePointPopup(id) {
+      const i = pointPopups.findIndex(p=>p.id===id); if (i!==-1) pointPopups.splice(i,1);
+      const j = pointPickCrosshairs.findIndex(p=>p.id===id); if (j!==-1) pointPickCrosshairs.splice(j,1);
+    }
+
+    // Explicit function — avoids unreliable inline template assignment in Vue 3 prod build
+    function setPointMode(id, mode) {
+      const pp = pointPopups.find(p=>p.id===id);
+      if (pp) pp.mode = mode;
+    }
+
+    // ── Line pick ─────────────────────────────────────────────────────
+    function sampleLine(sx1, sy1, sx2, sy2) {
+      const ip1 = screenToImage(sx1,sy1), ip2 = screenToImage(sx2,sy2);
+      const dist  = Math.hypot(ip2.x-ip1.x, ip2.y-ip1.y);
+      const steps = Math.max(2, Math.min(400, Math.round(dist)));
+      const colors = [];
+      for (let i=0; i<=steps; i++) {
+        const t  = i/steps;
+        const ix = ip1.x+(ip2.x-ip1.x)*t, iy=ip1.y+(ip2.y-ip1.y)*t;
+        const { r,g,b } = samplePixel(ix,iy);
+        colors.push({ colorIdx:i, ...buildColorData(r,g,b) }); // colorIdx = position on line
+      }
+
+      const id       = getId();
+      const lineDesc = describeLineColors(colors);
+      const px = Math.max(8, Math.min(wrapW.value-340, Math.min(sx1,sx2)+16));
+      const py = Math.max(8, Math.min(wrapH.value-300, Math.min(sy1,sy2)));
+
+      const lp = reactive({
+        id, x:px, y:py, colors, lineDesc,
+        selectedPoints: [colors[0]],   // start with first point selected
+        activePointIdx: 0,
+        stripHoverX: null,
+        ix1:ip1.x, iy1:ip1.y, ix2:ip2.x, iy2:ip2.y
+      });
+      linePopups.push(lp);
+      linePicks.push({ id, sx1,sy1,sx2,sy2, ix1:ip1.x,iy1:ip1.y,ix2:ip2.x,iy2:ip2.y });
+      nextTick(() => renderLineStrip(lp));
+    }
+
+    function describeLineColors(colors) {
+      if (!colors.length) return '';
+      const first=colors[0], last=colors[colors.length-1];
+      const ld=last.l-first.l, sd=last.s-first.s, hd=Math.abs(last.h-first.h);
+      const ch=[];
+      if (Math.abs(ld)>10) ch.push(ld>0?'lightens':'darkens');
+      if (Math.abs(sd)>10) ch.push(sd>0?'becomes more saturated':'becomes more muted');
+      if (hd>20) ch.push(`shifts from ${first.desc.split(', ').pop()} toward ${last.desc.split(', ').pop()}`);
+      return ch.length ? `Starts as ${first.desc}; ${ch.join(', ')} toward ${last.desc}.`
+                       : `A consistent ${first.desc} tone throughout.`;
+    }
+
+    // Explicit setter for line active point
+    function setLineActivePoint(lpId, idx) {
+      const lp = linePopups.find(p=>p.id===lpId);
+      if (lp) lp.activePointIdx = idx;
+    }
+
+    function removeLinePoint(lpId, idx) {
+      const lp = linePopups.find(p=>p.id===lpId);
+      if (!lp) return;
+      lp.selectedPoints.splice(idx, 1);
+      // Clamp activePointIdx so it stays valid
+      if (lp.selectedPoints.length === 0) {
+        lp.activePointIdx = 0;
+      } else {
+        lp.activePointIdx = Math.min(lp.activePointIdx, lp.selectedPoints.length - 1);
+      }
+    }
+
+    function clearLinePoints(lpId) {
+      const lp = linePopups.find(p=>p.id===lpId);
+      if (lp) { lp.selectedPoints.splice(0); lp.activePointIdx = 0; }
+    }
+
+    function closeLinePopup(id) {
+      const i = linePopups.findIndex(p=>p.id===id); if (i!==-1) linePopups.splice(i,1);
+      const j = linePicks.findIndex(p=>p.id===id);  if (j!==-1) linePicks.splice(j,1);
+    }
+
+    // Computed screen-position markers for selected line points. Auto-updates on pan/zoom.
+    const linePointMarkers = computed(() => {
+      const tx=transform.x, ty=transform.y, ts=transform.scale; // reactive tracking
+      const markers=[];
+      linePopups.forEach(lp => {
+        const total = Math.max(1, lp.colors.length-1);
+        lp.selectedPoints.forEach((sp,i) => {
+          const t  = sp.colorIdx/total;
+          const ix = lp.ix1+(lp.ix2-lp.ix1)*t;
+          const iy = lp.iy1+(lp.iy2-lp.iy1)*t;
+          markers.push({ key:`${lp.id}-${i}`, x:ix*ts+tx, y:iy*ts+ty, hex:sp.hex, active:lp.activePointIdx===i });
+        });
+      });
+      return markers;
+    });
+
+    // ── Line strip ────────────────────────────────────────────────────
+    const stripCanvasMap = new WeakMap();
+    function setStripCanvas(el, lp) { if (el) stripCanvasMap.set(lp, el); }
+
+    function renderLineStrip(lp) {
+      const el = stripCanvasMap.get(lp);
+      if (!el||!lp.colors.length) return;
+      const w=el.offsetWidth||280, h=el.offsetHeight||28;
+      el.width=w; el.height=h;
+      const ctx=el.getContext('2d');
+      lp.colors.forEach((c,i) => {
+        const x=Math.round(i/(lp.colors.length-1)*(w-1));
+        ctx.fillStyle=c.hex; ctx.fillRect(x,0,2,h);
+      });
+    }
+
+    function onStripClick(e, lp) {
+      const rect   = e.currentTarget.getBoundingClientRect();
+      const frac   = Math.max(0, Math.min(1, (e.clientX-rect.left)/rect.width));
+      const cIdx   = Math.round(frac*(lp.colors.length-1));
+      const c      = lp.colors[cIdx];
+      const exists = lp.selectedPoints.findIndex(sp=>sp.colorIdx===cIdx);
+      if (exists!==-1) { lp.activePointIdx=exists; }
+      else { lp.selectedPoints.push(c); lp.activePointIdx=lp.selectedPoints.length-1; }
+    }
+
+    function onStripHover(e, lp) {
+      lp.stripHoverX = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    }
+
+    // ── Swatches panel ────────────────────────────────────────────────
+    const allSwatches = computed(() => {
+      const out=[];
+      pointPopups.forEach(p => out.push({ id:p.id, hex:p.hex, desc:p.desc, type:'point' }));
+      linePopups.forEach(lp => lp.selectedPoints.forEach((sp,i) =>
+        out.push({ id:`${lp.id}-${i}`, hex:sp.hex, desc:sp.desc, type:'line point' })
+      ));
+      return out;
+    });
+
+    // ── Mouse events ──────────────────────────────────────────────────
+    function getWrapXY(e) {
+      const r=canvasWrap.value.getBoundingClientRect();
+      return { x:e.clientX-r.left, y:e.clientY-r.top };
+    }
+
+    function onMouseDown(e) {
+      if (e.button!==0) return;
+      if (e.target.closest('.popup')||e.target.closest('.zoom-controls')) return;
+      const {x,y}=getWrapXY(e);
+      if (tool.value==='pan') {
+        isPanning.value=true; panStart={x,y,tx:transform.x,ty:transform.y};
+      } else if (tool.value==='line') {
+        isDraggingLine.value=true; lineStart={x,y};
+        Object.assign(dragLine,{x1:x,y1:y,x2:x,y2:y});
+      }
+    }
+
+    function onMouseMove(e) {
+      const {x,y}=getWrapXY(e);
+      if (isPanning.value&&panStart) {
+        transform.x=panStart.tx+(x-panStart.x); transform.y=panStart.ty+(y-panStart.y);
+        drawCanvas(); updatePickPositions();
+      } else if (isDraggingLine.value) { dragLine.x2=x; dragLine.y2=y; }
+    }
+
+    function onMouseUp(e) {
+      if (!img.value) { isPanning.value=false; return; }
+      // Same guard as onMouseDown — ignore clicks originating inside popups or controls
+      if (e.target.closest('.popup')||e.target.closest('.zoom-controls')) {
+        isPanning.value=false; isDraggingLine.value=false; return;
+      }
+      const {x,y}=getWrapXY(e);
+      if (isPanning.value) { isPanning.value=false; panStart=null; }
+      else if (isDraggingLine.value) {
+        isDraggingLine.value=false;
+        if (Math.hypot(x-lineStart.x,y-lineStart.y)>5) sampleLine(lineStart.x,lineStart.y,x,y);
+        lineStart=null;
+      } else if (tool.value==='point') { samplePoint(x,y); }
+    }
+
+    function onMouseLeave() {
+      if (isDraggingLine.value) { isDraggingLine.value=false; lineStart=null; }
+      if (isPanning.value)      { isPanning.value=false; panStart=null; }
+    }
+
+    // ── Touch events ──────────────────────────────────────────────────
+    let lastPinchDist = null;
+
+    function onTouchStart(e) {
+      // If touch is on a popup or control, do NOT preventDefault — the browser needs to
+      // synthesize click events for those taps to work on mobile.
+      if (e.target.closest('.popup') || e.target.closest('.zoom-controls')) return;
+      e.preventDefault(); // prevent scroll/zoom and click synthesis for canvas touches only
+      if (e.touches.length===1) {
+        const t=e.touches[0], rect=canvasWrap.value.getBoundingClientRect();
+        const x=t.clientX-rect.left, y=t.clientY-rect.top;
+        if (tool.value==='line') {
+          isDraggingLine.value=true; lineStart={x,y};
+          Object.assign(dragLine,{x1:x,y1:y,x2:x,y2:y});
+        } else { isPanning.value=true; panStart={x,y,tx:transform.x,ty:transform.y}; }
+      } else if (e.touches.length===2) {
+        isDraggingLine.value=false; isPanning.value=false;
+        const t1=e.touches[0],t2=e.touches[1];
+        lastPinchDist=Math.hypot(t2.clientX-t1.clientX,t2.clientY-t1.clientY);
+        panStart={tx:transform.x,ty:transform.y};
+      }
+    }
+
+    function onTouchMove(e) {
+      const rect=canvasWrap.value.getBoundingClientRect();
+      if (e.touches.length===1) {
+        if (e.target.closest('.popup')) return; // allow popup body scrolling
+        e.preventDefault(); // prevent page scroll during canvas pan
+        const t=e.touches[0]; const x=t.clientX-rect.left, y=t.clientY-rect.top;
+        if (isPanning.value&&panStart) {
+          transform.x=panStart.tx+(x-panStart.x); transform.y=panStart.ty+(y-panStart.y);
+          drawCanvas(); updatePickPositions();
+        } else if (isDraggingLine.value) { dragLine.x2=x; dragLine.y2=y; }
+      } else if (e.touches.length===2&&lastPinchDist!==null) {
+        e.preventDefault(); // prevent page pinch-zoom
+        const t1=e.touches[0],t2=e.touches[1];
+        const dist=Math.hypot(t2.clientX-t1.clientX,t2.clientY-t1.clientY);
+        const cx=(t1.clientX+t2.clientX)/2-rect.left, cy=(t1.clientY+t2.clientY)/2-rect.top;
+        const ns=Math.max(0.05,Math.min(20,transform.scale*(dist/lastPinchDist)));
+        transform.x=cx-(cx-transform.x)*(ns/transform.scale);
+        transform.y=cy-(cy-transform.y)*(ns/transform.scale);
+        transform.scale=ns; lastPinchDist=dist;
+        drawCanvas(); updatePickPositions();
+      }
+    }
+
+    function onTouchEnd(e) {
+      // If touch ended on a popup/control, let the browser handle it (synthesize click)
+      if (e.target.closest('.popup') || e.target.closest('.zoom-controls')) return;
+      if (e.touches.length===0) {
+        const rect=canvasWrap.value.getBoundingClientRect();
+        const t=e.changedTouches[0];
+        const x=t.clientX-rect.left, y=t.clientY-rect.top;
+        if (isDraggingLine.value) {
+          isDraggingLine.value=false;
+          if (Math.hypot(x-lineStart.x,y-lineStart.y)>10) sampleLine(lineStart.x,lineStart.y,x,y);
+          lineStart=null;
+        } else if (isPanning.value) {
+          isPanning.value=false;
+          if (panStart&&tool.value==='point'&&Math.hypot(x-panStart.x,y-panStart.y)<8) samplePoint(x,y);
+          panStart=null;
+        }
+        lastPinchDist=null;
+      }
+    }
+
+    // ── Update overlay positions on pan/zoom ──────────────────────────
+    function updatePickPositions() {
+      pointPickCrosshairs.forEach(p => {
+        const pp=pointPopups.find(q=>q.id===p.id);
+        if (pp) { const sc=imageToScreen(pp.ix,pp.iy); p.sx=sc.x; p.sy=sc.y; pp.sx=sc.x; pp.sy=sc.y; }
+      });
+      linePicks.forEach(l => {
+        const s1=imageToScreen(l.ix1,l.iy1), s2=imageToScreen(l.ix2,l.iy2);
+        l.sx1=s1.x; l.sy1=s1.y; l.sx2=s2.x; l.sy2=s2.y;
+      });
+    }
+
+    // ── Popup dragging ────────────────────────────────────────────────
+    function startPopupDrag(e, popup) {
+      e.preventDefault();
+      popupDragState = { popup, mx:e.clientX, my:e.clientY, ox:popup.x, oy:popup.y };
+    }
+    function startPopupTouchDrag(e, popup) {
+      if (e.touches.length!==1) return;
+      const t=e.touches[0];
+      popupDragState = { popup, mx:t.clientX, my:t.clientY, ox:popup.x, oy:popup.y };
+    }
+
+    // ── Export ────────────────────────────────────────────────────────
+    async function exportPNG() {
+      const el=document.getElementById('main-area');
+      try {
+        const c=await html2canvas(el,{backgroundColor:'#0c0c0f',useCORS:true,scale:2});
+        const a=document.createElement('a'); a.download='chroma-export.png';
+        a.href=c.toDataURL('image/png'); a.click();
+      } catch(err) { alert('Export failed: '+err.message); }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────
+    onMounted(() => {
+      document.addEventListener('paste', handleGlobalPaste);
+
+      // Document-level handlers so popup drag works outside the canvas element
+      document.addEventListener('mousemove', e => {
+        if (!popupDragState) return;
+        const p=popupDragState.popup;
+        p.x=popupDragState.ox+(e.clientX-popupDragState.mx);
+        p.y=popupDragState.oy+(e.clientY-popupDragState.my);
+      });
+      document.addEventListener('mouseup', () => { popupDragState=null; });
+      document.addEventListener('touchmove', e => {
+        if (!popupDragState||e.touches.length!==1) return;
+        e.preventDefault();
+        const t=e.touches[0], p=popupDragState.popup;
+        p.x=popupDragState.ox+(t.clientX-popupDragState.mx);
+        p.y=popupDragState.oy+(t.clientY-popupDragState.my);
+      }, { passive:false });
+      document.addEventListener('touchend', () => { popupDragState=null; });
+
+      window.addEventListener('resize', () => { updateWrapSize(); drawCanvas(); updatePickPositions(); });
+    });
+
+    onUnmounted(() => {
+      document.removeEventListener('paste', handleGlobalPaste);
+    });
+
+    return {
+      fileInput, canvasWrap, mainCanvas,
+      imageLoaded, dragOver, tool, panelOpen,
+      isPanning, isDraggingLine, dragLine,
+      wrapW, wrapH, transform,
+      pointPopups, linePopups, linePicks, pointPickCrosshairs,
+      linePointMarkers, allSwatches,
+      triggerUpload, onFileChange, onDrop, triggerPaste,
+      onMouseDown, onMouseMove, onMouseUp, onMouseLeave,
+      onWheel, onTouchStart, onTouchMove, onTouchEnd,
+      adjustZoom, exportPNG,
+      closePointPopup, setPointMode,
+      closeLinePopup, setLineActivePoint, removeLinePoint, clearLinePoints,
+      startPopupDrag, startPopupTouchDrag,
+      setStripCanvas, onStripClick, onStripHover,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
