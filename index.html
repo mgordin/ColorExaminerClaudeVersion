@@ -408,7 +408,7 @@
                 <div class="color-grid" :style="{background:'hsl('+pp.h+',100%,50%)'}">
                   <div class="color-grid-sat"></div>
                   <div class="color-grid-val"></div>
-                  <div class="grid-cursor" :style="{left:pp.s+'%', top:(100-pp.vFromHsv)+'%'}"></div>
+                  <div class="grid-cursor" :style="{left:pp.sFromHsv+'%', top:(100-pp.vFromHsv)+'%'}"></div>
                 </div>
               </div>
             </template>
@@ -486,7 +486,7 @@
                   <div class="color-grid-sat"></div>
                   <div class="color-grid-val"></div>
                   <div class="grid-cursor" :style="{
-                    left: lp.selectedPoints[lp.activePointIdx].s+'%',
+                    left: lp.selectedPoints[lp.activePointIdx].sFromHsv+'%',
                     top: (100-lp.selectedPoints[lp.activePointIdx].vFromHsv)+'%'
                   }"></div>
                 </div>
@@ -751,7 +751,7 @@ createApp({
 
     function buildColorData(r,g,b) {
       const hsl=rgbToHsl(r,g,b), hsv=rgbToHsv(r,g,b);
-      return { r,g,b, hex:toHex(r,g,b), h:hsl.h, s:hsl.s, l:hsl.l, vFromHsv:hsv.v, desc:colorDesc(r,g,b) };
+      return { r,g,b, hex:toHex(r,g,b), h:hsl.h, s:hsl.s, l:hsl.l, sFromHsv:hsv.s, vFromHsv:hsv.v, desc:colorDesc(r,g,b) };
     }
 
     // ── Point pick ────────────────────────────────────────────────────
