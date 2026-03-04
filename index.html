@@ -1330,7 +1330,7 @@ createApp({
     }
 
     function extractDominant(image, k) {
-      const MAX_DIM = 150;
+      const MAX_DIM = 200;
       const scale   = Math.min(1, MAX_DIM / Math.max(image.width, image.height));
       const sw      = Math.max(1, Math.round(image.width  * scale));
       const sh      = Math.max(1, Math.round(image.height * scale));
@@ -1341,177 +1341,237 @@ createApp({
       octx.drawImage(image, 0, 0, sw, sh);
       const data = octx.getImageData(0, 0, sw, sh).data;
 
-      // Split pixels into two pools by saturation threshold
-      const SAT_THRESH = 0.20; // HSV saturation cutoff
-      const VAL_THRESH = 0.12; // ignore very dark pixels in both pools
-      const allPixels    = [];
-      const vividPixels  = [];
-
+      // Convert each pixel to [h(0-360), s(0-1), v(0-1), r, g, b]
+      const pixels = [];
       for (let i = 0; i < data.length; i += 4) {
         if (data[i+3] < 128) continue;
         const r = data[i], g = data[i+1], b = data[i+2];
-        const max = Math.max(r, g, b), min = Math.min(r, g, b);
-        const hsvS = max === 0 ? 0 : (max - min) / max;
-        const hsvV = max / 255;
-        if (hsvV < VAL_THRESH) continue;
-        const px = [r, g, b, hsvS, hsvV];
-        allPixels.push(px);
-        if (hsvS >= SAT_THRESH) vividPixels.push(px);
+        const max = Math.max(r,g,b), min = Math.min(r,g,b);
+        const v   = max / 255;
+        if (v < 0.06) continue;
+        const d   = max - min;
+        const s   = max === 0 ? 0 : d / max;
+        let h = 0;
+        if (d > 0) {
+          if (max === r)      h = (((g - b) / d) % 6) * 60;
+          else if (max === g) h = ((b - r) / d + 2) * 60;
+          else                h = ((r - g) / d + 4) * 60;
+          if (h < 0) h += 360;
+        }
+        pixels.push([h, s, v, r, g, b]);
       }
-      if (!allPixels.length) return [];
+      if (!pixels.length) return [];
 
-      const hasVivid = vividPixels.length > allPixels.length * 0.005;
+      // HSV cylindrical distance — dark red and bright red are CLOSE,
+      // red and blue are far, hue ignored for unsaturated pixels.
+      function hsvDist2(a, b) {
+        const dH  = Math.min(Math.abs(a[0]-b[0]), 360-Math.abs(a[0]-b[0])) / 180;
+        const dS  = a[1] - b[1];
+        const dV  = a[2] - b[2];
+        const sat = (a[1] + b[1]) / 2;
+        return 4 * sat * sat * dH * dH + 1.5 * dS * dS + 2 * dV * dV;
+      }
 
-      // How many slots to dedicate to vivid vs neutral clusters
-      // Always reserve at least 1 vivid slot if vivid pixels exist
-      const vividSlots   = hasVivid ? Math.max(1, Math.round(k * 0.5)) : 0;
-      const neutralSlots = k - vividSlots;
-
-      // Run k-means on a pixel array, return cluster centers
+      // k-means++ in HSV space with circular hue averaging
       function kmeans(pool, slots) {
         if (!pool.length || slots < 1) return [];
-        const pts = pool; // alias
+        slots = Math.min(slots, pool.length);
 
-        // k-means++ init
-        const centers = [pts[Math.floor(Math.random() * pts.length)]];
+        const centers = [pool[Math.floor(Math.random() * pool.length)]];
         while (centers.length < slots) {
-          const dists = pts.map(p => {
+          const dists = pool.map(p => {
             let minD = Infinity;
-            for (const c of centers) { const d = dist2(p, c); if (d < minD) minD = d; }
+            for (const c of centers) { const d = hsvDist2(p,c); if (d < minD) minD = d; }
             return minD;
           });
-          const sum = dists.reduce((a, b) => a + b, 0);
-          if (sum === 0) { centers.push(pts[Math.floor(Math.random() * pts.length)]); continue; }
-          let r = Math.random() * sum;
-          for (let i = 0; i < pts.length; i++) {
-            r -= dists[i];
-            if (r <= 0) { centers.push(pts[i]); break; }
+          const sum = dists.reduce((a,b) => a+b, 0);
+          if (sum === 0) { centers.push(pool[Math.floor(Math.random()*pool.length)]); continue; }
+          let rnd = Math.random() * sum, picked = false;
+          for (let i = 0; i < pool.length; i++) {
+            rnd -= dists[i];
+            if (rnd <= 0) { centers.push(pool[i]); picked = true; break; }
           }
-          if (centers.length < slots) centers.push(pts[Math.floor(Math.random() * pts.length)]);
+          if (!picked) centers.push(pool[Math.floor(Math.random()*pool.length)]);
         }
 
-        const assignments = new Array(pts.length).fill(0);
-        for (let iter = 0; iter < 30; iter++) {
+        const assignments = new Int32Array(pool.length);
+        for (let iter = 0; iter < 35; iter++) {
           let changed = false;
-          for (let i = 0; i < pts.length; i++) {
+          for (let i = 0; i < pool.length; i++) {
             let best = 0, bestD = Infinity;
             for (let j = 0; j < slots; j++) {
-              const d = dist2(pts[i], centers[j]);
+              const d = hsvDist2(pool[i], centers[j]);
               if (d < bestD) { bestD = d; best = j; }
             }
             if (assignments[i] !== best) { assignments[i] = best; changed = true; }
           }
           if (!changed) break;
-          const sums = Array.from({length: slots}, () => [0,0,0,0]);
-          for (let i = 0; i < pts.length; i++) {
-            const j = assignments[i];
-            sums[j][0] += pts[i][0]; sums[j][1] += pts[i][1];
-            sums[j][2] += pts[i][2]; sums[j][3]++;
+          // Circular hue averaging via sin/cos
+          const sums = Array.from({length: slots}, () => [0,0,0,0,0,0,0,0]);
+          for (let i = 0; i < pool.length; i++) {
+            const j = assignments[i], p = pool[i];
+            sums[j][0] += Math.sin(p[0] * Math.PI/180);
+            sums[j][1] += Math.cos(p[0] * Math.PI/180);
+            sums[j][2] += p[1]; sums[j][3] += p[2];
+            sums[j][4] += p[3]; sums[j][5] += p[4]; sums[j][6] += p[5];
+            sums[j][7]++;
           }
           for (let j = 0; j < slots; j++) {
-            if (sums[j][3] > 0) centers[j] = [
-              Math.round(sums[j][0] / sums[j][3]),
-              Math.round(sums[j][1] / sums[j][3]),
-              Math.round(sums[j][2] / sums[j][3]),
-            ];
+            const n = sums[j][7] || 1;
+            const hDeg = ((Math.atan2(sums[j][0]/n, sums[j][1]/n) * 180/Math.PI) + 360) % 360;
+            centers[j] = [hDeg, sums[j][2]/n, sums[j][3]/n,
+                          Math.round(sums[j][4]/n), Math.round(sums[j][5]/n), Math.round(sums[j][6]/n)];
           }
         }
 
-        const counts = new Array(slots).fill(0);
+        const counts = new Int32Array(slots);
         for (const a of assignments) counts[a]++;
-        return centers.map((c, j) => ({ rgb: c, count: counts[j], total: pts.length }));
+        return centers.map((c,j) => ({
+          hsv: [c[0],c[1],c[2]], rgb: [c[3],c[4],c[5]],
+          count: counts[j], total: pool.length
+        }));
       }
 
-      // Phase 1: cluster all pixels to find neutral tones
-      const neutralResults = kmeans(allPixels, neutralSlots);
+      // ── Chromatic contrast score ─────────────────────────────────
+      // Compute the image's dominant hue as a saturation-weighted mean vector
+      // on the hue circle. Candidates whose hue is far from this dominant get
+      // a contrast boost — so a brown in a green image, or a blue streak in a
+      // warm image, surfaces as a "pop" color regardless of pixel count.
+      let sinSum = 0, cosSum = 0, satTotalW = 0;
+      for (const p of pixels) {
+        const w = p[1] * p[2]; // weight = s × v (ignore desaturated/dark pixels)
+        sinSum += Math.sin(p[0] * Math.PI / 180) * w;
+        cosSum += Math.cos(p[0] * Math.PI / 180) * w;
+        satTotalW += w;
+      }
+      // Dominant hue angle (degrees) and how strongly it's concentrated (0-1)
+      const domHueDeg = satTotalW > 0
+        ? ((Math.atan2(sinSum / satTotalW, cosSum / satTotalW) * 180 / Math.PI) + 360) % 360
+        : 0;
+      // Circular variance: 0 = all same hue, 1 = hues spread evenly
+      const meanResultant = satTotalW > 0
+        ? Math.sqrt((sinSum/satTotalW)**2 + (cosSum/satTotalW)**2)
+        : 0;
+      // chromaDominance: how strongly one hue dominates (high = worth boosting contrasters)
+      const chromaDominance = meanResultant; // 0-1
 
-      // Phase 2: cluster ONLY vivid pixels — guarantees vivid hues get found
-      const vividResults   = kmeans(vividPixels, vividSlots);
-
-      // Merge, deduplicate clusters that are very similar
-      const MERGE_THRESH2 = 30 * 30; // merge if closer than ~30 RGB units
-      const combined = [];
-
-      function isDuplicate(rgb) {
-        return combined.some(e => dist2(e.rgb, rgb) < MERGE_THRESH2);
+      function chromaContrastBoost(hsv) {
+        // Angular distance from dominant hue, 0-1
+        const dH = Math.min(Math.abs(hsv[0] - domHueDeg), 360 - Math.abs(hsv[0] - domHueDeg)) / 180;
+        // Only boost if the image actually has a strong dominant hue AND
+        // this candidate has meaningful saturation (not a grey)
+        const contrast = dH * hsv[1] * chromaDominance;
+        // Max 3× boost for a fully saturated, perfectly opposite hue
+        // in an image with a very strong dominant hue
+        return 1 + 4 * contrast;
       }
 
-      // Add vivid first (they have priority)
-      for (const r of vividResults) {
-        if (!isDuplicate(r.rgb)) combined.push({ ...r, fromVivid: true });
-      }
-      // Add neutral results that aren't covered by a vivid cluster
-      for (const r of neutralResults) {
-        if (!isDuplicate(r.rgb)) combined.push({ ...r, fromVivid: false });
-      }
+      // Main pass: oversample so maximin has a rich diverse pool
+      const K_OVER   = Math.min(k * 6, pixels.length);
+      const clusters = kmeans(pixels, K_OVER);
 
-      const totalAll = allPixels.length;
-      const totalVivid = vividPixels.length;
-
-      // Score every candidate
-      const candidates = combined
-        .map(e => {
-          const cd = buildColorData(e.rgb[0], e.rgb[1], e.rgb[2]);
-          const rawPct = e.fromVivid
-            ? (e.count / e.total) * (totalVivid / totalAll)
-            : e.count / e.total;
-          const vividness = (cd.sFromHsv / 100) * (cd.vFromHsv / 100);
-          const score = rawPct * (1 + 15 * vividness * vividness);
-          return { ...cd, pct: Math.max(1, Math.round(rawPct * 100)), score };
-        })
-        .filter(c => c.pct >= 1 || c.score > 0.01);
-
-      // Maximin diversity selection:
-      // Iteratively pick the candidate with the best combined score of
-      // (a) its own relevance score and (b) its minimum perceptual distance
-      // to any already-selected color. This guarantees the final palette
-      // is both high-quality AND dissimilar.
-      const DIVERSITY_WEIGHT = 0.6; // 0 = pure score, 1 = pure diversity
-
-      // Perceptual distance in 0–1 range (max possible dist² in weighted RGB space ≈ 2·255²+4·255²+255²)
-      const MAX_DIST2 = 2*255*255 + 4*255*255 + 255*255;
-
-      function perceptDist2(a, b) {
-        return 2*(a.r-b.r)**2 + 4*(a.g-b.g)**2 + (a.b-b.b)**2;
+      // ── Hue-bucket quota ─────────────────────────────────────────
+      // Most hues use 30° sectors, but the entire red-to-magenta family
+      // (hue 300-360° + 0-30°) shares one 90° bucket. This prevents dark
+      // maroon and bright red from each occupying separate sector slots —
+      // they compete against each other, leaving room for blue/purple.
+      function hueBucket(hsv) {
+        if (hsv[1] < 0.12) return 'grey';
+        const h = hsv[0];
+        if (h >= 300 || h < 30) return 'red_family';
+        return Math.floor(h / 30);
       }
 
-      const selected = [];
+      // Scale quota with k so larger k values get a richer candidate pool.
+      // red_family gets ceil(k/4) slots (capped at 3) since it dominates many images.
+      // Other hue buckets get ceil(k/6) slots. Grey gets ceil(k*0.4) slots.
+      const RED_QUOTA      = Math.min(3, Math.max(1, Math.ceil(k / 4)));
+      const HUE_QUOTA      = Math.max(1, Math.ceil(k / 6));
+      const GREY_QUOTA     = Math.max(2, Math.ceil(k * 0.4));
+      const DEDUP_THRESH   = 0.06;
+      const bucketCounts   = {};
+      const combined       = [];
+
+      // Sort by vividness-weighted score so the most saturated representative
+      // wins each bucket — bright blue beats desaturated purple even if
+      // the duller version has more pixels.
+      const bucketSortScore = c => (c.count / pixels.length) * (1 + 60 * (c.hsv[1] * c.hsv[2]) ** 2);
+      for (const c of clusters.sort((a,b) => bucketSortScore(b) - bucketSortScore(a))) {
+        const bucket = hueBucket(c.hsv);
+        const quota  = bucket === 'grey' ? GREY_QUOTA
+                     : bucket === 'red_family' ? RED_QUOTA
+                     : HUE_QUOTA;
+        const used   = bucketCounts[bucket] || 0;
+        if (used >= quota) continue;
+        if (!combined.some(e => hsvDist2(e.hsv, c.hsv) < DEDUP_THRESH)) {
+          combined.push(c);
+          bucketCounts[bucket] = used + 1;
+        }
+      }
+      // Safety net: if the quota-filtered pool is smaller than k,
+      // relax quotas and pull in more clusters until we have enough candidates.
+      if (combined.length < k) {
+        const bucketCounts2 = {};
+        for (const c of clusters.sort((a,b) => bucketSortScore(b) - bucketSortScore(a))) {
+          if (combined.some(e => hsvDist2(e.hsv, c.hsv) < DEDUP_THRESH)) continue;
+          const bucket = hueBucket(c.hsv);
+          const used   = bucketCounts2[bucket] || 0;
+          if (used >= k) continue; // still cap per-bucket at k to prevent total flooding
+          combined.push(c);
+          bucketCounts2[bucket] = used + 1;
+          if (combined.length >= k * 2) break;
+        }
+      }
+      if (!combined.length) return [];
+
+      // Score candidates
+      const total = pixels.length;
+      const candidates = combined.map(e => {
+        const cd       = buildColorData(e.rgb[0], e.rgb[1], e.rgb[2]);
+        const coverage = e.count / total;
+        const vividness = e.hsv[1] * e.hsv[2];
+        // Chromatic contrast: boost colors that are hue-distant from the image's
+        // dominant hue. A brown in a green image or blue in a warm image gets
+        // elevated even when it covers only a small fraction of pixels.
+        const contrastBoost = chromaContrastBoost(e.hsv);
+        const score = coverage * (1 + 8 * vividness * vividness) * contrastBoost;
+        return { ...cd, hsv: e.hsv, pct: Math.max(1, Math.round(coverage * 100)), score };
+      }).filter(c => c.score > 0.0003);
+      if (!candidates.length) return [];
+
+      // Maximin diversity selection using HSV distance.
+      // Normalise distances against the ACTUAL max pairwise distance among
+      // candidates (not the theoretical max) so diversity scores spread
+      // across the full 0-1 range and genuinely compete with relevance scores.
+      const DIVERSITY_W = 0.70;
+      const maxScore    = candidates.reduce((m,x) => Math.max(m,x.score), 0) || 1;
+
+      // Compute all pairwise distances to find the real maximum
+      let actualMaxDist = 0.001;
+      for (let i = 0; i < candidates.length; i++)
+        for (let j = i+1; j < candidates.length; j++)
+          actualMaxDist = Math.max(actualMaxDist, hsvDist2(candidates[i].hsv, candidates[j].hsv));
+
+      const selected  = [];
       const remaining = [...candidates];
-
       while (selected.length < k && remaining.length > 0) {
-        let bestIdx = 0, bestCombined = -Infinity;
-
+        let bestIdx = 0, bestVal = -Infinity;
         for (let i = 0; i < remaining.length; i++) {
           const c = remaining[i];
-          // Min distance to any already-selected color (normalised 0–1)
-          const minDist2 = selected.length === 0
-            ? MAX_DIST2
-            : Math.min(...selected.map(s => perceptDist2(c, s)));
-          const diversityScore = minDist2 / MAX_DIST2;
-
-          // Normalise relevance score into 0–1 range for blending
-          const maxScore = candidates.reduce((m, x) => Math.max(m, x.score), 0) || 1;
-          const normScore = c.score / maxScore;
-
-          const combined2 = (1 - DIVERSITY_WEIGHT) * normScore + DIVERSITY_WEIGHT * diversityScore;
-          if (combined2 > bestCombined) { bestCombined = combined2; bestIdx = i; }
+          const minD2 = selected.length === 0
+            ? actualMaxDist
+            : Math.min(...selected.map(s => hsvDist2(c.hsv, s.hsv)));
+          const diversityScore = minD2 / actualMaxDist; // now spans full 0-1
+          const normScore      = c.score / maxScore;
+          const val = (1 - DIVERSITY_W) * normScore + DIVERSITY_W * diversityScore;
+          if (val > bestVal) { bestVal = val; bestIdx = i; }
         }
-
         selected.push(remaining[bestIdx]);
         remaining.splice(bestIdx, 1);
       }
-
       return selected;
     }
 
-    function colorDist2(a, b) {
-      return 2*(a[0]-b[0])**2 + 4*(a[1]-b[1])**2 + (a[2]-b[2])**2;
-    }
-
-    // Internal dist used by kmeans (also perceptually weighted)
-    function dist2(a, b) {
-      return 2*(a[0]-b[0])**2 + 4*(a[1]-b[1])**2 + (a[2]-b[2])**2;
-    }
     function palRoundRect(ctx, x, y, w, h, r) {
       ctx.beginPath();
       ctx.moveTo(x + r, y);
